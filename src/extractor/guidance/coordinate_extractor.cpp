@@ -1,5 +1,10 @@
-#include "extractor/guidance/coordinate_extractor.hpp"
+#include "util/debug.hpp"
+#include <fstream>
+#include <iomanip> // TODO REMOVE
+#include <set>
+
 #include "extractor/guidance/constants.hpp"
+#include "extractor/guidance/coordinate_extractor.hpp"
 #include "extractor/guidance/toolkit.hpp"
 
 #include <algorithm>
@@ -84,7 +89,7 @@ CoordinateExtractor::GetCoordinateAlongRoad(const NodeID intersection_node,
     const auto lookahead_distance =
         FAR_LOOKAHEAD_DISTANCE + considered_lanes * ASSUMED_LANE_WIDTH * 0.5;
 
-    //reduce coordinates to the ones we care about
+    // reduce coordinates to the ones we care about
     coordinates = TrimCoordinatesToLength(std::move(coordinates), lookahead_distance);
 
     // If this reduction leaves us with only two coordinates, the turns/angles are represented in a
@@ -216,6 +221,7 @@ CoordinateExtractor::GetCoordinateAlongRoad(const NodeID intersection_node,
      */
     const double max_deviation_from_regression = GetMaxDeviation(
         coordinates.begin(), coordinates.end(), regression_line.first, regression_line.second);
+
     if (max_deviation_from_regression < 0.35 * ASSUMED_LANE_WIDTH)
     {
         // We use the locations on the regression line to offset the regression line onto the
@@ -251,6 +257,16 @@ CoordinateExtractor::GetCoordinateAlongRoad(const NodeID intersection_node,
 
     if (IsCurve(coordinates, total_distance, turn_edge_data))
     {
+        static std::set<std::pair<NodeID, EdgeID>> items;
+        auto entry = std::make_pair(intersection_node, turn_edge);
+        if (items.count(entry) == 0)
+        {
+            std::ofstream ofs("circle.geojson", std::ios::app);
+            ofs << "{" << util::toMultiPoint(TrimCoordinatesToLength(coordinates, 30)) << "},"
+                << std::endl;
+            ofs.close();
+            items.insert(entry);
+        }
         /*
          * In curves we now have to distinguish between larger curves and tiny curves modelling the
          * actual turn in the beginnig.
@@ -369,9 +385,74 @@ bool CoordinateExtractor::IsCurve(const std::vector<util::Coordinate> &coordinat
                                   const double segment_length,
                                   const util::NodeBasedEdgeData &edge_data) const
 {
+    BOOST_ASSERT(coordinates.size() > 2);
+
     // by default, we treat roundabout as curves
     if (edge_data.roundabout)
         return true;
+
+    // TODO we might have to fix this to better compensate for errors due to repeated coordinates
+    const bool takes_an_actual_turn = [&coordinates]() {
+        const auto begin_bearing =
+            util::coordinate_calculation::bearing(coordinates[0], coordinates[1]);
+        const auto end_bearing = util::coordinate_calculation::bearing(
+            coordinates[coordinates.size() - 2], coordinates[coordinates.size() - 1]);
+
+        const auto total_angle = angularDeviation(begin_bearing, end_bearing);
+        return total_angle > 0.5 * NARROW_TURN_ANGLE;
+    }();
+
+    if (!takes_an_actual_turn)
+        return false;
+
+    const auto get_deviation = [](const util::Coordinate &line_start,
+                                  const util::Coordinate &line_end,
+                                  const util::Coordinate &point) {
+        // find the projected coordinate
+        auto coord_between =
+            util::coordinate_calculation::projectPointOnSegment(line_start, line_end, point).second;
+        // and calculate the distance between the intermediate coordinate and the coordinate
+        return util::coordinate_calculation::haversineDistance(coord_between, point);
+    };
+
+    // check if the deviation is a sequence that increases up to a maximum deviation and decreses
+    // after, following what we would expect from a modelled curve
+    const bool has_up_down_deviation = [&coordinates, get_deviation]() {
+        double last_deviation = 0;
+        std::size_t current_coordinate_index = 1;
+
+        // proceed to the maximum deviation
+        for (; current_coordinate_index < coordinates.size(); ++current_coordinate_index)
+        {
+            const auto current_deviation = get_deviation(
+                coordinates.front(), coordinates.back(), coordinates[current_coordinate_index]);
+            if (current_deviation >= last_deviation)
+                last_deviation = current_deviation;
+            else
+            {
+                ++current_coordinate_index;
+                last_deviation = current_deviation;
+                break;
+            }
+        }
+        // check if we are only descending in deviation now
+        for (; current_coordinate_index < coordinates.size(); ++current_coordinate_index)
+        {
+            const auto current_deviation = get_deviation(
+                coordinates.front(), coordinates.back(), coordinates[current_coordinate_index]);
+
+            if (current_deviation > last_deviation)
+                return false;
+
+            last_deviation = current_deviation;
+        }
+        return true;
+    }();
+
+    // a curve has increasing deviation from its front/back vertices to a certain point and after it
+    // only decreases
+    if (!has_up_down_deviation)
+        return false;
 
     BOOST_ASSERT(coordinates.size() >= 3);
     // Compute all turn angles along the road
@@ -398,17 +479,6 @@ bool CoordinateExtractor::IsCurve(const std::vector<util::Coordinate> &coordinat
                 return false;
         }
         return true;
-    }();
-
-    const bool takes_an_actual_turn = [&coordinates]() {
-        BOOST_ASSERT(coordinates.size() > 2);
-        const auto begin_bearing =
-            util::coordinate_calculation::bearing(coordinates[0], coordinates[1]);
-        const auto end_bearing = util::coordinate_calculation::bearing(
-            coordinates[coordinates.size() - 2], coordinates[coordinates.size() - 1]);
-
-        const auto total_angle = angularDeviation(begin_bearing, end_bearing);
-        return total_angle > NARROW_TURN_ANGLE;
     }();
 
     return (segment_length >= 0.5 * FAR_LOOKAHEAD_DISTANCE && has_many_coordinates &&
