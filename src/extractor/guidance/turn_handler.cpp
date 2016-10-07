@@ -127,10 +127,6 @@ bool TurnHandler::isObviousOfTwo(const EdgeID via_edge,
 Intersection TurnHandler::handleThreeWayTurn(const EdgeID via_edge, Intersection intersection) const
 {
     const auto obvious_index = findObviousTurn(via_edge, intersection);
-    std::cout << "[intersection]\n";
-    for( auto road : intersection )
-        std::cout << "\t" << toString(road) << std::endl;
-    std::cout << "Obvious: " << obvious_index << std::endl;
     BOOST_ASSERT(intersection[0].turn.angle < 0.001);
     /* Two nearly straight turns -> FORK
                OOOOOOO
