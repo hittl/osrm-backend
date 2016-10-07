@@ -1,5 +1,5 @@
-#include "extractor/guidance/constants.hpp"
 #include "extractor/guidance/coordinate_extractor.hpp"
+#include "extractor/guidance/constants.hpp"
 #include "extractor/guidance/toolkit.hpp"
 
 #include <algorithm>
@@ -81,56 +81,12 @@ CoordinateExtractor::GetCoordinateAlongRoad(const NodeID intersection_node,
     if (coordinates.size() <= 2)
         return coordinates.back();
 
-    /* In an ideal world, the road would only have two coordinates if it goes mainly straigt. Since
-     * OSM is operating on noisy data, we have some variations going straight.
-     *
-     *              b                       d
-     * a ---------------------------------------------- e
-     *                           c
-     *
-     * The road from a-e offers a lot of variation, even though it is mostly straight. Here we
-     * calculate the distances of all nodes in between to the straight line between a and e. If the
-     * distances inbetween are small, we assume a straight road. To calculate these distances, we
-     * don't use the coordinates of the road itself but our just calculated regression vector
-     */
-    const auto GetMaxDeviation = [](std::vector<util::Coordinate>::const_iterator range_begin,
-                                    const std::vector<util::Coordinate>::const_iterator &range_end,
-                                    const util::Coordinate &straight_begin,
-                                    const util::Coordinate &straight_end) {
-        double deviation = 0;
-        for (; range_begin != range_end; range_begin = std::next(range_begin))
-        {
-            // find the projected coordinate
-            auto coord_between = util::coordinate_calculation::projectPointOnSegment(
-                                     straight_begin, straight_end, *range_begin)
-                                     .second;
-            // and calculate the distance between the intermediate coordinate and the coordinate
-            // on the osrm-way
-            deviation = std::max(
-                deviation,
-                util::coordinate_calculation::haversineDistance(coord_between, *range_begin));
-        }
-        return deviation;
-    };
-
     const auto lookahead_distance =
         FAR_LOOKAHEAD_DISTANCE + considered_lanes * ASSUMED_LANE_WIDTH * 0.5;
 
-    /* Our very first step trims the coordinates to the FAR_LOOKAHEAD_DISTANCE. The idea here is to
-     * filter all coordinates at the end of the road and consider only the form close to the
-     * intersection:
-     *
-     * a -------------- v ----------.
-     *                                 .
-     *                                   .
-     *                                   .
-     *                                   b
-     *
-     * For calculating the turn angle for the intersection at `a`, we do not care about the turn
-     * between `v` and `b`. This calculation trims the coordinates to the ones immediately at the
-     * intersection.
-     */
+    //reduce coordinates to the ones we care about
     coordinates = TrimCoordinatesToLength(std::move(coordinates), lookahead_distance);
+
     // If this reduction leaves us with only two coordinates, the turns/angles are represented in a
     // valid way. Only curved roads and other difficult scenarios will require multiple coordinates.
     if (coordinates.size() == 2)
@@ -139,6 +95,7 @@ CoordinateExtractor::GetCoordinateAlongRoad(const NodeID intersection_node,
     const auto &turn_edge_data = node_based_graph.GetEdgeData(turn_edge);
     const util::Coordinate turn_coordinate =
         node_coordinates[traversed_in_reverse ? to_node : intersection_node];
+
     // Low priority roads are usually modelled very strangely. The roads are so small, though, that
     // our basic heuristic looking at the road should be fine.
     if (turn_edge_data.road_classification.IsLowPriorityRoadClass())
@@ -274,138 +231,25 @@ CoordinateExtractor::GetCoordinateAlongRoad(const NodeID intersection_node,
         return GetCorrectedCoordinate(turn_coordinate, coord_between_front, coord_between_back);
     }
 
-    BOOST_ASSERT(coordinates.size() >= 3);
-    // Compute all turn angles along the road
-    const auto turn_angles = [coordinates]() {
-        std::vector<double> turn_angles;
-        turn_angles.reserve(coordinates.size() - 2);
-        for (std::size_t index = 0; index + 2 < coordinates.size(); ++index)
-        {
-            turn_angles.push_back(util::coordinate_calculation::computeAngle(
-                coordinates[index], coordinates[index + 1], coordinates[index + 2]));
-        }
-        return turn_angles;
-    }();
-
-    /*
-     * If the very first coordinate is within lane offsets and the rest offers a near straight line,
-     * we use an offset coordinate.
-     *
-     * ----------------------------------------
-     *
-     * ----------------------------------------
-     *   a -
-     * ----------------------------------------
-     *        \
-     * ----------------------------------------
-     *           \
-     *             b --------------------c
-     *
-     * Will be considered a very slight turn, instead of the near 90 degree turn we see right here.
-     */
     const auto total_distance =
         std::accumulate(segment_distances.begin(), segment_distances.end(), 0.);
 
-    // check if a given length is with half a lane of the assumed lane offset
-    const auto IsCloseToLaneDistance = [considered_lanes](const double width) {
-        // a road usually is connected to the middle of the lanes. So the lane-offset has to
-        // consider half to road
-        const auto lane_offset = 0.5 * considered_lanes * ASSUMED_LANE_WIDTH;
-        return std::abs(width - lane_offset) < 0.5 * ASSUMED_LANE_WIDTH;
-    };
-
-    // Check whether the very first coordinate is simply an offset. This is the case if the initial
-    // vertex is close to the turn and the remaining coordinates are nearly straight.
-    const auto offset_index = std::max<decltype(straight_index)>(1, straight_index);
-    const bool is_direct_offset = [&]() {
-        // we need at least a single coordinate
-        if (offset_index + 1 >= coordinates.size())
-            return false;
-
-        // the straight part has to be around the lane distance
-        if (!IsCloseToLaneDistance(segment_distances[offset_index]))
-            return false;
-
-        // the segment itself cannot be short
-        if (total_distance < 0.8 * FAR_LOOKAHEAD_DISTANCE)
-            return false;
-
-        // if the remaining segment is short, we don't consider it an offset
-        if ((total_distance - std::max(straight_distance, segment_distances[1])) >
-            0.1 * total_distance)
-            return false;
-
-        // finally, we cannot be far off from a straight line for the remaining coordinates
-        return 0.5 * ASSUMED_LANE_WIDTH > GetMaxDeviation(coordinates.begin() + offset_index,
-                                                          coordinates.end(),
-                                                          coordinates[offset_index],
-                                                          coordinates.back());
-    }();
-    if (is_direct_offset)
+    if (IsDirectOffset(coordinates,
+                       straight_index,
+                       straight_distance,
+                       total_distance,
+                       segment_distances,
+                       considered_lanes))
     {
         // could be too agressive? Depend on lanes to check how far we want to go out?
         // compare
         // http://www.openstreetmap.org/search?query=52.411243%2013.363575#map=19/52.41124/13.36357
+        const auto offset_index = std::max<decltype(straight_index)>(1, straight_index);
         return GetCorrectedCoordinate(
             turn_coordinate, coordinates[offset_index], coordinates[offset_index + 1]);
     }
 
-    // detect curves: If we see many coordinates that follow a similar turn angle, we assume a curve
-    const bool has_many_coordinates =
-        coordinates.size() >= static_cast<std::size_t>(std::max(
-                                  4, (int)ceil((6 * (total_distance / FAR_LOOKAHEAD_DISTANCE)))));
-    const bool all_angles_are_similar = [&turn_angles]() {
-        for (std::size_t i = 1; i < turn_angles.size(); ++i)
-        {
-            if (angularDeviation(turn_angles[i - 1], turn_angles[i]) > FUZZY_ANGLE_DIFFERENCE ||
-                (turn_angles[i] > STRAIGHT_ANGLE == turn_angles[i - 1] < STRAIGHT_ANGLE))
-                return false;
-        }
-        return true;
-    }();
-
-    const bool takes_an_actual_turn = [&coordinates]() {
-        BOOST_ASSERT(coordinates.size() > 2);
-        const auto begin_bearing =
-            util::coordinate_calculation::bearing(coordinates[0], coordinates[1]);
-        const auto end_bearing = util::coordinate_calculation::bearing(
-            coordinates[coordinates.size() - 2], coordinates[coordinates.size() - 1]);
-
-        const auto total_angle = angularDeviation(begin_bearing, end_bearing);
-        return total_angle > NARROW_TURN_ANGLE;
-    }();
-
-    /*
-     * the curve is still best described as looking at the very first vector for the turn angle.
-     * Consider:
-     *
-     * |
-     * a - 1
-     * |       o
-     * |         2
-     * |          o
-     * |           3
-     * |           o
-     * |           4
-     *
-     * The turn itself from a-1 would be considered as a 90 degree turn, even though the road is
-     * taking a turn later.
-     * In this situaiton we return the very first coordinate, describing the road just at the turn.
-     * As an added benefit, we get a straight turn at a curved road:
-     *
-     *            o   b   o
-     *      o                   o
-     *   o                         o
-     *  o                           o
-     *  o                           o
-     *  a                           c
-     *
-     * The turn from a-b to b-c is straight. With every vector we go further down the road, the turn
-     * angle would get stronger. Therefore we consider the very first coordinate as our best choice
-     */
-    if ((total_distance >= 0.5 * FAR_LOOKAHEAD_DISTANCE && has_many_coordinates &&
-         all_angles_are_similar && takes_an_actual_turn) ||
-        turn_edge_data.roundabout)
+    if (IsCurve(coordinates, total_distance, turn_edge_data))
     {
         /*
          * In curves we now have to distinguish between larger curves and tiny curves modelling the
@@ -497,6 +341,120 @@ CoordinateExtractor::GetCoordinatesAlongRoad(const NodeID intersection_node,
         }
         return result;
     }
+}
+
+double
+CoordinateExtractor::GetMaxDeviation(std::vector<util::Coordinate>::const_iterator range_begin,
+                                     const std::vector<util::Coordinate>::const_iterator &range_end,
+                                     const util::Coordinate &straight_begin,
+                                     const util::Coordinate &straight_end) const
+{
+    double deviation = 0;
+    for (; range_begin != range_end; range_begin = std::next(range_begin))
+    {
+        // find the projected coordinate
+        auto coord_between = util::coordinate_calculation::projectPointOnSegment(
+                                 straight_begin, straight_end, *range_begin)
+                                 .second;
+        // and calculate the distance between the intermediate coordinate and the coordinate
+        // on the osrm-way
+        deviation =
+            std::max(deviation,
+                     util::coordinate_calculation::haversineDistance(coord_between, *range_begin));
+    }
+    return deviation;
+};
+
+bool CoordinateExtractor::IsCurve(const std::vector<util::Coordinate> &coordinates,
+                                  const double segment_length,
+                                  const util::NodeBasedEdgeData &edge_data) const
+{
+    // by default, we treat roundabout as curves
+    if (edge_data.roundabout)
+        return true;
+
+    BOOST_ASSERT(coordinates.size() >= 3);
+    // Compute all turn angles along the road
+    const auto turn_angles = [coordinates]() {
+        std::vector<double> turn_angles;
+        turn_angles.reserve(coordinates.size() - 2);
+        for (std::size_t index = 0; index + 2 < coordinates.size(); ++index)
+        {
+            turn_angles.push_back(util::coordinate_calculation::computeAngle(
+                coordinates[index], coordinates[index + 1], coordinates[index + 2]));
+        }
+        return turn_angles;
+    }();
+
+    // detect curves: If we see many coordinates that follow a similar turn angle, we assume a curve
+    const bool has_many_coordinates =
+        coordinates.size() >= static_cast<std::size_t>(std::max(
+                                  4, (int)ceil((6 * (segment_length / FAR_LOOKAHEAD_DISTANCE)))));
+    const bool all_angles_are_similar = [&turn_angles]() {
+        for (std::size_t i = 1; i < turn_angles.size(); ++i)
+        {
+            if (angularDeviation(turn_angles[i - 1], turn_angles[i]) > FUZZY_ANGLE_DIFFERENCE ||
+                (turn_angles[i] > STRAIGHT_ANGLE == turn_angles[i - 1] < STRAIGHT_ANGLE))
+                return false;
+        }
+        return true;
+    }();
+
+    const bool takes_an_actual_turn = [&coordinates]() {
+        BOOST_ASSERT(coordinates.size() > 2);
+        const auto begin_bearing =
+            util::coordinate_calculation::bearing(coordinates[0], coordinates[1]);
+        const auto end_bearing = util::coordinate_calculation::bearing(
+            coordinates[coordinates.size() - 2], coordinates[coordinates.size() - 1]);
+
+        const auto total_angle = angularDeviation(begin_bearing, end_bearing);
+        return total_angle > NARROW_TURN_ANGLE;
+    }();
+
+    return (segment_length >= 0.5 * FAR_LOOKAHEAD_DISTANCE && has_many_coordinates &&
+            all_angles_are_similar && takes_an_actual_turn);
+}
+
+bool CoordinateExtractor::IsDirectOffset(const std::vector<util::Coordinate> &coordinates,
+                                         const std::size_t straight_index,
+                                         const double straight_distance,
+                                         const double segment_length,
+                                         const std::vector<double> &segment_distances,
+                                         const std::uint8_t considered_lanes) const
+{
+    // check if a given length is with half a lane of the assumed lane offset
+    const auto IsCloseToLaneDistance = [considered_lanes](const double width) {
+        // a road usually is connected to the middle of the lanes. So the lane-offset has to
+        // consider half to road
+        const auto lane_offset = 0.5 * considered_lanes * ASSUMED_LANE_WIDTH;
+        return std::abs(width - lane_offset) < 0.5 * ASSUMED_LANE_WIDTH;
+    };
+
+    // Check whether the very first coordinate is simply an offset. This is the case if the initial
+    // vertex is close to the turn and the remaining coordinates are nearly straight.
+    const auto offset_index = std::max<decltype(straight_index)>(1, straight_index);
+
+    // we need at least a single coordinate
+    if (offset_index + 1 >= coordinates.size())
+        return false;
+
+    // the straight part has to be around the lane distance
+    if (!IsCloseToLaneDistance(segment_distances[offset_index]))
+        return false;
+
+    // the segment itself cannot be short
+    if (segment_length < 0.8 * FAR_LOOKAHEAD_DISTANCE)
+        return false;
+
+    // if the remaining segment is short, we don't consider it an offset
+    if ((segment_length - std::max(straight_distance, segment_distances[1])) > 0.1 * segment_length)
+        return false;
+
+    // finally, we cannot be far off from a straight line for the remaining coordinates
+    return 0.5 * ASSUMED_LANE_WIDTH > GetMaxDeviation(coordinates.begin() + offset_index,
+                                                      coordinates.end(),
+                                                      coordinates[offset_index],
+                                                      coordinates.back());
 }
 
 std::vector<util::Coordinate>

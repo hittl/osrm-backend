@@ -41,9 +41,22 @@ class CoordinateExtractor
                                                           const bool traversed_in_reverse,
                                                           const NodeID to_node) const;
 
-    /* when looking at a set of coordinates, this function allows trimming the vector to a smaller,
-     * only containing coordinates up to a given distance along the path. The last coordinate might
-     * be interpolated
+    /* When extracting the coordinates, we first extract all coordinates. We don't care about most
+     * of them, though.
+     *
+     * Our very first step trims the coordinates to a saller set, close to the intersection.. The
+     * idea here is to filter all coordinates at the end of the road and consider only the formi
+     * close to the intersection:
+     *
+     * a -------------- v ----------.
+     *                                 .
+     *                                   .
+     *                                   .
+     *                                   b
+     *
+     * For calculating the turn angle for the intersection at `a`, we do not care about the turn
+     * between `v` and `b`. This calculation trims the coordinates to the ones immediately at the
+     * intersection.
      */
     std::vector<util::Coordinate> TrimCoordinatesToLength(std::vector<util::Coordinate> coordinates,
                                                           const double desired_length) const;
@@ -105,6 +118,81 @@ class CoordinateExtractor
 
     std::pair<util::Coordinate, util::Coordinate>
     RegressionLine(const std::vector<util::Coordinate> &coordinates) const;
+
+    /* In an ideal world, the road would only have two coordinates if it goes mainly straigt. Since
+     * OSM is operating on noisy data, we have some variations going straight.
+     *
+     *              b                       d
+     * a ---------------------------------------------- e
+     *                           c
+     *
+     * The road from a-e offers a lot of variation, even though it is mostly straight. Here we
+     * calculate the distances of all nodes in between to the straight line between a and e. If the
+     * distances inbetween are small, we assume a straight road. To calculate these distances, we
+     * don't use the coordinates of the road itself but our just calculated regression vector
+     */
+    double GetMaxDeviation(std::vector<util::Coordinate>::const_iterator range_begin,
+                           const std::vector<util::Coordinate>::const_iterator &range_end,
+                           const util::Coordinate &straight_begin,
+                           const util::Coordinate &straight_end) const;
+
+    /*
+     * the curve is still best described as looking at the very first vector for the turn angle.
+     * Consider:
+     *
+     * |
+     * a - 1
+     * |       o
+     * |         2
+     * |          o
+     * |           3
+     * |           o
+     * |           4
+     *
+     * The turn itself from a-1 would be considered as a 90 degree turn, even though the road is
+     * taking a turn later.
+     * In this situaiton we return the very first coordinate, describing the road just at the
+     * turn.
+     * As an added benefit, we get a straight turn at a curved road:
+     *
+     *            o   b   o
+     *      o                   o
+     *   o                         o
+     *  o                           o
+     *  o                           o
+     *  a                           c
+     *
+     * The turn from a-b to b-c is straight. With every vector we go further down the road, the
+     * turn
+     * angle would get stronger. Therefore we consider the very first coordinate as our best
+     * choice
+     */
+    bool IsCurve(const std::vector<util::Coordinate> &coordinates,
+                 const double segment_length,
+                 const util::NodeBasedEdgeData &edge_data) const;
+
+    /*
+     * If the very first coordinate is within lane offsets and the rest offers a near straight line,
+     * we use an offset coordinate.
+     *
+     * ----------------------------------------
+     *
+     * ----------------------------------------
+     *   a -
+     * ----------------------------------------
+     *        \
+     * ----------------------------------------
+     *           \
+     *             b --------------------c
+     *
+     * Will be considered a very slight turn, instead of the near 90 degree turn we see right here.
+     */
+    bool IsDirectOffset(const std::vector<util::Coordinate> &coordinates,
+                        const std::size_t straight_index,
+                        const double straight_distance,
+                        const double segment_length,
+                        const std::vector<double> &segment_distances,
+                        const std::uint8_t considered_lanes) const;
 
     std::size_t *times_called;
     std::size_t *times_failed;
