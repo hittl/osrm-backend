@@ -22,7 +22,6 @@
 #include <boost/interprocess/sync/named_condition.hpp>
 #include <boost/interprocess/sync/scoped_lock.hpp>
 #include <boost/interprocess/sync/sharable_lock.hpp>
-#include <boost/thread/lock_types.hpp>
 
 #include <algorithm>
 #include <fstream>
@@ -35,26 +34,17 @@ namespace
 // Works the same for every plugin.
 template <typename ParameterT, typename PluginT, typename ResultT>
 osrm::engine::Status
-RunQuery(const std::unique_ptr<osrm::storage::SharedBarriers> &lock,
-         osrm::engine::DataWatchdog& watchdog,
+RunQuery(std::unique_ptr<osrm::engine::DataWatchdog>& watchdog,
          std::shared_ptr<osrm::engine::datafacade::BaseDataFacade> &facade,
          const ParameterT &parameters,
          PluginT &plugin,
          ResultT &result)
 {
-    if (!lock)
+    std::cout << "Check for new region..." << std::endl;
+    if (watchdog && watchdog->HasNewRegion())
     {
-        return plugin.HandleRequest(facade, parameters, result);
-    }
-
-    BOOST_ASSERT(lock);
-    // TODO: This lock can be removed if every instance of the facade
-    // holds its own shared lock
-    boost::interprocess::sharable_lock<boost::interprocess::named_sharable_mutex> query_lock(lock->query_mutex);
-
-    if (watchdog.HasNewRegion())
-    {
-        watchdog.MaybeLoadNewRegion(facade);
+        std::cout << "Check for new region..." << std::endl;
+        watchdog->MaybeLoadNewRegion(facade);
     }
 
     osrm::engine::Status status = plugin.HandleRequest(facade, parameters, result);
@@ -79,14 +69,12 @@ Engine::Engine(const EngineConfig &config)
                 "No shared memory blocks found, have you forgotten to run osrm-datastore?");
         }
 
-        lock = std::make_unique<storage::SharedBarriers>();
         watchdog = std::make_unique<DataWatchdog>();
         // this will always either return a value or throw an exception
         // in the initial run
         watchdog->MaybeLoadNewRegion(query_data_facade);
         BOOST_ASSERT(query_data_facade);
         BOOST_ASSERT(watchdog);
-        BOOST_ASSERT(lock);
     }
     else
     {
@@ -115,32 +103,32 @@ Engine &Engine::operator=(Engine &&) noexcept = default;
 
 Status Engine::Route(const api::RouteParameters &params, util::json::Object &result) const
 {
-    return RunQuery(lock, *watchdog, query_data_facade, params, *route_plugin, result);
+    return RunQuery(watchdog, query_data_facade, params, *route_plugin, result);
 }
 
 Status Engine::Table(const api::TableParameters &params, util::json::Object &result) const
 {
-    return RunQuery(lock, *watchdog, query_data_facade, params, *table_plugin, result);
+    return RunQuery(watchdog, query_data_facade, params, *table_plugin, result);
 }
 
 Status Engine::Nearest(const api::NearestParameters &params, util::json::Object &result) const
 {
-    return RunQuery(lock, *watchdog, query_data_facade, params, *nearest_plugin, result);
+    return RunQuery(watchdog, query_data_facade, params, *nearest_plugin, result);
 }
 
 Status Engine::Trip(const api::TripParameters &params, util::json::Object &result) const
 {
-    return RunQuery(lock, *watchdog, query_data_facade, params, *trip_plugin, result);
+    return RunQuery(watchdog, query_data_facade, params, *trip_plugin, result);
 }
 
 Status Engine::Match(const api::MatchParameters &params, util::json::Object &result) const
 {
-    return RunQuery(lock, *watchdog, query_data_facade, params, *match_plugin, result);
+    return RunQuery(watchdog, query_data_facade, params, *match_plugin, result);
 }
 
 Status Engine::Tile(const api::TileParameters &params, std::string &result) const
 {
-    return RunQuery(lock, *watchdog, query_data_facade, params, *tile_plugin, result);
+    return RunQuery(watchdog, query_data_facade, params, *tile_plugin, result);
 }
 
 } // engine ns

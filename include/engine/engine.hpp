@@ -75,9 +75,6 @@ class Engine final
     Status Tile(const api::TileParameters &parameters, std::string &result) const;
 
   private:
-    mutable std::unique_ptr<storage::SharedBarriers> lock;
-    std::unique_ptr<DataWatchdog> watchdog;
-
     std::unique_ptr<plugins::ViaRoutePlugin> route_plugin;
     std::unique_ptr<plugins::TablePlugin> table_plugin;
     std::unique_ptr<plugins::NearestPlugin> nearest_plugin;
@@ -87,6 +84,7 @@ class Engine final
 
     // reading and setting this is protected by locking in the watchdog
     mutable std::shared_ptr<datafacade::BaseDataFacade> query_data_facade;
+    mutable std::unique_ptr<DataWatchdog> watchdog;
 };
 }
 }
