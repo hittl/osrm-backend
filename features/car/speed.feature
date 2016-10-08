@@ -22,3 +22,10 @@ Feature: Car - speeds
             | residential    | no     | 31 km/h      |
             | living_street  | no     | 18 km/h      |
             | service        | no     | 23 km/h      |
+
+    # Alternating oneways have to take average waiting time into account.
+    Scenario: Car - scaled speeds for oneway=alternating
+        Then routability should be
+            | highway        | oneway      | bothw         |
+            | tertiary       | no          | 43 km/h       |
+            | tertiary       | alternating | 20 km/h +- 10 |
