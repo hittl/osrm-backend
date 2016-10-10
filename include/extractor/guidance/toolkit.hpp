@@ -16,6 +16,8 @@
 #include "extractor/guidance/intersection.hpp"
 #include "extractor/guidance/turn_instruction.hpp"
 
+#include "engine/guidance/route_step.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -286,9 +288,21 @@ inline std::string applyAccessTokens(std::string lane_string, const std::string 
     return result_string;
 }
 
+LaneID inline numLanesToTheRight(const engine::guidance::RouteStep &step)
+{
+    return step.intersections.front().lanes.first_lane_from_the_right;
+}
+
+LaneID inline numLanesToTheLeft(const engine::guidance::RouteStep &step)
+{
+    LaneID total = step.intersections.front().lane_description.size();
+    return total - (step.intersections.front().lanes.lanes_in_turn +
+                    step.intersections.front().lanes.first_lane_from_the_right);
+}
+
 template <class Iterator>
 inline boost::iterator_range<Iterator>
-lanesToTheLeft(const util::guidance::LaneTuple lanes,
+lanesToTheLeft(const util::guidance::LaneTuple &lanes,
                const extractor::guidance::TurnLaneDescription &lane_description)
 {
     const auto farthest_left_turn_lane =
@@ -298,7 +312,8 @@ lanesToTheLeft(const util::guidance::LaneTuple lanes,
     {
         // return a range from the farthest left lane, to the first lane left of turn lanes
         const auto first_left_of_turn_lanes = lane_description.begin() + (farthest_left_turn_lane);
-        auto out_range = boost::make_iterator_range(lane_description.begin(), first_left_of_turn_lanes);
+        auto out_range =
+            boost::make_iterator_range(lane_description.begin(), first_left_of_turn_lanes);
         return out_range;
     }
     else
