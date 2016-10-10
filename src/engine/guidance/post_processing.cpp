@@ -1299,22 +1299,17 @@ std::vector<RouteStep> collapseUseLane(std::vector<RouteStep> steps)
         return index;
     };
 
-    const auto canCollapseUseLane = [containsTag](
-        const util::guidance::LaneTuple lanes,
-        const extractor::guidance::TurnLaneDescription lane_description) {
+    const auto canCollapseUseLane = [containsTag](const RouteStep &step) {
         // the lane description is given left to right, lanes are counted from the right.
         // Therefore we access the lane description using the reverse iterator
-        using iter_type = extractor::guidance::TurnLaneDescription::const_iterator;
 
-        boost::iterator_range<iter_type> right_most_lanes =
-            extractor::guidance::lanesToTheRight<iter_type>(lanes, lane_description);
+        auto right_most_lanes = extractor::guidance::lanesToTheRight(step);
         if (!right_most_lanes.empty() && containsTag(right_most_lanes.front(),
                                                      (extractor::guidance::TurnLaneType::straight |
                                                       extractor::guidance::TurnLaneType::none)))
             return false;
 
-        auto left_most_lanes =
-            extractor::guidance::lanesToTheLeft<iter_type>(lanes, lane_description);
+        auto left_most_lanes = extractor::guidance::lanesToTheLeft(step);
         if (!left_most_lanes.empty() && containsTag(left_most_lanes.back(),
                                                     (extractor::guidance::TurnLaneType::straight |
                                                      extractor::guidance::TurnLaneType::none)))
@@ -1327,8 +1322,7 @@ std::vector<RouteStep> collapseUseLane(std::vector<RouteStep> steps)
     {
         const auto &step = steps[step_index];
         if (step.maneuver.instruction.type == TurnType::UseLane &&
-            canCollapseUseLane(step.intersections.front().lanes,
-                               step.intersections.front().lane_description))
+            canCollapseUseLane(step))
         {
             const auto previous = getPreviousIndex(step_index);
             steps[previous] = elongate(std::move(steps[previous]), steps[step_index]);
