@@ -325,6 +325,9 @@ bool IntersectionGenerator::CanMerge(const NodeID node_at_intersection,
                                     node_info_list);
     const auto coordinate_at_intersection = node_info_list[node_at_intersection];
 
+    if( angle_between >= 120 )
+        return false;
+
     const auto isValidYArm = [this,
                               intersection,
                               coordinate_at_in_edge,

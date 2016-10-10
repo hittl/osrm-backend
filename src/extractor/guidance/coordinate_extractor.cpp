@@ -86,6 +86,10 @@ CoordinateExtractor::GetCoordinateAlongRoad(const NodeID intersection_node,
     if (coordinates.size() <= 2)
         return coordinates.back();
 
+    // fallback, mostly necessary for dead ends
+    if (intersection_node == to_node)
+        return TrimCoordinatesToLength(coordinates, 5).back();
+
     const auto lookahead_distance =
         FAR_LOOKAHEAD_DISTANCE + considered_lanes * ASSUMED_LANE_WIDTH * 0.5;
 
@@ -255,7 +259,11 @@ CoordinateExtractor::GetCoordinateAlongRoad(const NodeID intersection_node,
             turn_coordinate, coordinates[offset_index], coordinates[offset_index + 1]);
     }
 
-    if (IsCurve(coordinates, total_distance, turn_edge_data))
+    if (IsCurve(coordinates,
+                segment_distances,
+                total_distance,
+                considered_lanes * 0.5 * ASSUMED_LANE_WIDTH,
+                turn_edge_data))
     {
         static std::set<std::pair<NodeID, EdgeID>> items;
         auto entry = std::make_pair(intersection_node, turn_edge);
@@ -382,14 +390,18 @@ CoordinateExtractor::GetMaxDeviation(std::vector<util::Coordinate>::const_iterat
 };
 
 bool CoordinateExtractor::IsCurve(const std::vector<util::Coordinate> &coordinates,
+                                  const std::vector<double> &segment_distances,
                                   const double segment_length,
+                                  const double considered_lane_width,
                                   const util::NodeBasedEdgeData &edge_data) const
 {
     BOOST_ASSERT(coordinates.size() > 2);
 
     // by default, we treat roundabout as curves
     if (edge_data.roundabout)
+    {
         return true;
+    }
 
     // TODO we might have to fix this to better compensate for errors due to repeated coordinates
     const bool takes_an_actual_turn = [&coordinates]() {
@@ -417,7 +429,10 @@ bool CoordinateExtractor::IsCurve(const std::vector<util::Coordinate> &coordinat
 
     // check if the deviation is a sequence that increases up to a maximum deviation and decreses
     // after, following what we would expect from a modelled curve
-    const bool has_up_down_deviation = [&coordinates, get_deviation]() {
+    std::size_t location_of_max_deviation = 0;
+    double maximum_deviation = 0;
+    const bool has_up_down_deviation = [&coordinates, get_deviation](std::size_t &maximum_index,
+                                                                     double &maximum_deviation) {
         double last_deviation = 0;
         std::size_t current_coordinate_index = 1;
 
@@ -427,7 +442,11 @@ bool CoordinateExtractor::IsCurve(const std::vector<util::Coordinate> &coordinat
             const auto current_deviation = get_deviation(
                 coordinates.front(), coordinates.back(), coordinates[current_coordinate_index]);
             if (current_deviation >= last_deviation)
+            {
                 last_deviation = current_deviation;
+                maximum_index = current_coordinate_index;
+                maximum_deviation = current_deviation;
+            }
             else
             {
                 ++current_coordinate_index;
@@ -435,6 +454,7 @@ bool CoordinateExtractor::IsCurve(const std::vector<util::Coordinate> &coordinat
                 break;
             }
         }
+
         // check if we are only descending in deviation now
         for (; current_coordinate_index < coordinates.size(); ++current_coordinate_index)
         {
@@ -447,12 +467,25 @@ bool CoordinateExtractor::IsCurve(const std::vector<util::Coordinate> &coordinat
             last_deviation = current_deviation;
         }
         return true;
-    }();
+    }(location_of_max_deviation, maximum_deviation);
+
+    // if the maximum deviation is at a quarter of the total curve, we are probably looking at a
+    // normal turn
+    const auto distance_to_max_deviation = std::accumulate(
+        segment_distances.begin(), segment_distances.begin() + location_of_max_deviation, 0);
+    if ((distance_to_max_deviation < 0.25 * segment_length ||
+         maximum_deviation < 0.75 * ASSUMED_LANE_WIDTH) &&
+        segment_length > 10)
+    {
+        return false;
+    }
 
     // a curve has increasing deviation from its front/back vertices to a certain point and after it
     // only decreases
     if (!has_up_down_deviation)
+    {
         return false;
+    }
 
     BOOST_ASSERT(coordinates.size() >= 3);
     // Compute all turn angles along the road
@@ -471,18 +504,19 @@ bool CoordinateExtractor::IsCurve(const std::vector<util::Coordinate> &coordinat
     const bool has_many_coordinates =
         coordinates.size() >= static_cast<std::size_t>(std::max(
                                   4, (int)ceil((6 * (segment_length / FAR_LOOKAHEAD_DISTANCE)))));
+
     const bool all_angles_are_similar = [&turn_angles]() {
         for (std::size_t i = 1; i < turn_angles.size(); ++i)
         {
-            if (angularDeviation(turn_angles[i - 1], turn_angles[i]) > FUZZY_ANGLE_DIFFERENCE ||
+            if (angularDeviation(turn_angles[i - 1], turn_angles[i]) > FUZZY_ANGLE_DIFFERENCE &&
                 (turn_angles[i] > STRAIGHT_ANGLE == turn_angles[i - 1] < STRAIGHT_ANGLE))
                 return false;
         }
         return true;
     }();
 
-    return (segment_length >= 0.5 * FAR_LOOKAHEAD_DISTANCE && has_many_coordinates &&
-            all_angles_are_similar && takes_an_actual_turn);
+    return (segment_length > 2 * considered_lane_width && has_many_coordinates &&
+            all_angles_are_similar);
 }
 
 bool CoordinateExtractor::IsDirectOffset(const std::vector<util::Coordinate> &coordinates,

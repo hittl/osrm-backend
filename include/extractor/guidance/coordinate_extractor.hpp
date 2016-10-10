@@ -168,7 +168,9 @@ class CoordinateExtractor
      * choice
      */
     bool IsCurve(const std::vector<util::Coordinate> &coordinates,
+                 const std::vector<double> &segment_distances,
                  const double segment_length,
+                 const double considered_lane_width,
                  const util::NodeBasedEdgeData &edge_data) const;
 
     /*
